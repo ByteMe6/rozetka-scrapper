@@ -3,7 +3,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from playwright.async_api import async_playwright, Browser, BrowserContext, Playwright
 import re
-from typing import List, Optional
+from typing import List, Optional, Union
 
 app = FastAPI()
 
@@ -68,8 +68,9 @@ async def fetch_rozetka_html(url: str, context: BrowserContext) -> str:
 
 
 def parse_price_from_html(html: str) -> Optional[float]:
-    """Extract price from HTML"""
-    # Try main price pattern
+    """Extract price from HTML with multiple patterns"""
+
+    # Pattern 1: Main price with span
     m = re.search(
         r'<p[^>]*class="[^"]*product-price__big[^"]*"[^>]*>([^<]+)<span',
         html,
@@ -77,7 +78,7 @@ def parse_price_from_html(html: str) -> Optional[float]:
     )
 
     if not m:
-        # Try alternative pattern
+        # Pattern 2: Price without span
         m = re.search(
             r'<p[^>]*class="[^"]*product-price__big[^"]*"[^>]*>([0-9\s\u00A0]+)',
             html,
@@ -85,15 +86,41 @@ def parse_price_from_html(html: str) -> Optional[float]:
         )
 
     if not m:
+        # Pattern 3: JSON-LD schema.org
+        m = re.search(r'"price":\s*"?(\d+)"?', html, re.I)
+
+    if not m:
+        # Pattern 4: data-price attribute
+        m = re.search(r'data-price="(\d+)"', html, re.I)
+
+    if not m:
         return None
 
     raw = m.group(1)
-    cleaned = raw.replace("\u00A0", "").replace("&nbsp;", "").replace(" ", "").strip()
+    cleaned = raw.replace("\u00A0", "").replace("&nbsp;", "").replace(" ", "").replace('"', "").strip()
 
     try:
         return float(cleaned)
     except ValueError:
         return None
+
+
+def check_availability(html: str) -> str:
+    """Check if product is available"""
+    unavailable_markers = [
+        "Немає в наявності",
+        "Закінчився",
+        "Товар закінчився",
+        "out of stock",
+        "unavailable"
+    ]
+
+    html_lower = html.lower()
+    for marker in unavailable_markers:
+        if marker.lower() in html_lower:
+            return "out_of_stock"
+
+    return "not_found"
 
 
 # --- Single Price Endpoint ---
@@ -110,8 +137,11 @@ async def get_price(url: str):
         raise HTTPException(status_code=502, detail=f"fetch error: {e}")
 
     price = parse_price_from_html(html)
+
     if price is None:
-        raise HTTPException(status_code=404, detail="price not found")
+        # Check why price is not found
+        status = check_availability(html)
+        raise HTTPException(status_code=404, detail=status)
 
     return JSONResponse({"price": price})
 
@@ -130,6 +160,7 @@ async def get_prices(request: LinksRequest):
     try:
         context = await get_browser_context()
     except Exception as e:
+        print(f"Browser context error: {e}")
         return JSONResponse({
             "prices": ["browser error" for _ in request.urls]
         })
@@ -144,7 +175,14 @@ async def get_prices(request: LinksRequest):
         try:
             html = await fetch_rozetka_html(url, context)
             price = parse_price_from_html(html)
-            results.append(price if price is not None else "not found")
+
+            if price is not None:
+                results.append(price)
+            else:
+                # Check availability status
+                status = check_availability(html)
+                results.append(status)
+
         except Exception as e:
             print(f"Error fetching {url}: {e}")
             results.append("error")
@@ -155,26 +193,67 @@ async def get_prices(request: LinksRequest):
 # --- Health Check ---
 @app.get("/")
 def root():
-    return {"status": "ok", "service": "rozetka-parser"}
+    return {
+        "status": "ok",
+        "service": "rozetka-parser",
+        "version": "2.0",
+        "endpoints": {
+            "/price": "GET - single price lookup",
+            "/prices": "POST - batch price lookup"
+        }
+    }
+
+
+@app.get("/health")
+def health():
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "browser": "connected" if browser and browser.is_connected() else "disconnected"
+    }
 
 
 # --- Startup/Shutdown ---
 @app.on_event("startup")
 async def startup_event():
     """Initialize browser on startup"""
-    print("Starting browser...")
-    await get_browser_context()
-    print("Browser ready!")
+    print("=" * 50)
+    print("🚀 Starting Rozetka Parser API")
+    print("=" * 50)
+    print("Initializing browser...")
+    try:
+        await get_browser_context()
+        print("✅ Browser ready!")
+        print("=" * 50)
+    except Exception as e:
+        print(f"❌ Browser initialization failed: {e}")
+        print("=" * 50)
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Clean up browser on shutdown"""
+    print("=" * 50)
+    print("🛑 Shutting down Rozetka Parser API")
+    print("=" * 50)
+
     global playwright_instance, browser, context
-    if context:
-        await context.close()
-    if browser:
-        await browser.close()
-    if playwright_instance:
-        await playwright_instance.stop()
-    print("Browser closed")
+
+    try:
+        if context:
+            await context.close()
+            print("✅ Browser context closed")
+
+        if browser:
+            await browser.close()
+            print("✅ Browser closed")
+
+        if playwright_instance:
+            await playwright_instance.stop()
+            print("✅ Playwright stopped")
+    except Exception as e:
+        print(f"⚠️ Error during shutdown: {e}")
+
+    print("=" * 50)
+    print("👋 Goodbye!")
+    print("=" * 50)
