@@ -1,15 +1,14 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from playwright.sync_api import sync_playwright, Browser, BrowserContext
+from playwright.async_api import async_playwright, Browser, BrowserContext, Playwright
 import re
 from typing import List, Optional
-import asyncio
-from contextlib import asynccontextmanager
 
 app = FastAPI()
 
 # Global browser instance (reuse for better performance)
+playwright_instance: Optional[Playwright] = None
 browser: Optional[Browser] = None
 context: Optional[BrowserContext] = None
 
@@ -20,13 +19,15 @@ class LinksRequest(BaseModel):
 
 
 # --- Browser Management ---
-def get_browser_context():
+async def get_browser_context() -> BrowserContext:
     """Get or create browser context"""
-    global browser, context
+    global playwright_instance, browser, context
 
-    if browser is None or not browser.is_connected():
-        p = sync_playwright().start()
-        browser = p.chromium.launch(
+    if context is None or browser is None:
+        if playwright_instance is None:
+            playwright_instance = await async_playwright().start()
+
+        browser = await playwright_instance.chromium.launch(
             headless=True,
             args=[
                 '--disable-blink-features=AutomationControlled',
@@ -34,7 +35,7 @@ def get_browser_context():
                 '--no-sandbox'
             ]
         )
-        context = browser.new_context(
+        context = await browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -47,23 +48,23 @@ def get_browser_context():
     return context
 
 
-def fetch_rozetka_html(url: str, context: BrowserContext) -> str:
+async def fetch_rozetka_html(url: str, context: BrowserContext) -> str:
     """Fetch HTML using existing browser context"""
-    page = context.new_page()
+    page = await context.new_page()
     try:
         # Use domcontentloaded instead of networkidle - much faster!
-        page.goto(url, wait_until="domcontentloaded", timeout=10000)
+        await page.goto(url, wait_until="domcontentloaded", timeout=10000)
 
         # Wait for price element specifically (faster than full page load)
         try:
-            page.wait_for_selector('p.product-price__big', timeout=3000)
+            await page.wait_for_selector('p.product-price__big', timeout=3000)
         except:
             pass  # Continue even if selector not found
 
-        html = page.content()
+        html = await page.content()
         return html
     finally:
-        page.close()
+        await page.close()
 
 
 def parse_price_from_html(html: str) -> Optional[float]:
@@ -97,14 +98,14 @@ def parse_price_from_html(html: str) -> Optional[float]:
 
 # --- Single Price Endpoint ---
 @app.get("/price")
-def get_price(url: str):
+async def get_price(url: str):
     """Get price for a single URL"""
     if not url.startswith("http"):
         raise HTTPException(status_code=400, detail="invalid url")
 
     try:
-        context = get_browser_context()
-        html = fetch_rozetka_html(url, context)
+        context = await get_browser_context()
+        html = await fetch_rozetka_html(url, context)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"fetch error: {e}")
 
@@ -117,7 +118,7 @@ def get_price(url: str):
 
 # --- Batch Price Endpoint (OPTIMIZED) ---
 @app.post("/prices")
-def get_prices(request: LinksRequest):
+async def get_prices(request: LinksRequest):
     """
     Get prices for multiple URLs in batch.
     Reuses single browser instance for better performance.
@@ -127,7 +128,7 @@ def get_prices(request: LinksRequest):
 
     # Get shared browser context
     try:
-        context = get_browser_context()
+        context = await get_browser_context()
     except Exception as e:
         return JSONResponse({
             "prices": ["browser error" for _ in request.urls]
@@ -141,7 +142,7 @@ def get_prices(request: LinksRequest):
             continue
 
         try:
-            html = fetch_rozetka_html(url, context)
+            html = await fetch_rozetka_html(url, context)
             price = parse_price_from_html(html)
             results.append(price if price is not None else "not found")
         except Exception as e:
@@ -162,16 +163,18 @@ def root():
 async def startup_event():
     """Initialize browser on startup"""
     print("Starting browser...")
-    get_browser_context()
+    await get_browser_context()
     print("Browser ready!")
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Clean up browser on shutdown"""
-    global browser, context
+    global playwright_instance, browser, context
     if context:
-        context.close()
+        await context.close()
     if browser:
-        browser.close()
+        await browser.close()
+    if playwright_instance:
+        await playwright_instance.stop()
     print("Browser closed")
