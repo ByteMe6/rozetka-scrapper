@@ -1,11 +1,15 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from playwright.sync_api import sync_playwright
 import re
-from typing import Optional
+from typing import List, Optional
 
 app = FastAPI()
 
+# --- Модель для POST запроса ---
+class LinksRequest(BaseModel):
+    urls: List[str]
 
 def fetch_rozetka_html(url: str) -> str:
     with sync_playwright() as p:
@@ -24,9 +28,7 @@ def fetch_rozetka_html(url: str) -> str:
         browser.close()
     return html
 
-
 def parse_price_from_html(html: str) -> Optional[float]:
-    # <p class="product-price__big ..."> 15&nbsp;675<span ...>₴</span>
     m = re.search(
         r'<p[^>]*class="[^"]*product-price__big[^"]*"[^>]*>([^<]+)<span',
         html,
@@ -35,25 +37,18 @@ def parse_price_from_html(html: str) -> Optional[float]:
     if not m:
         return None
 
-    raw = m.group(1)  # " 15 675"
-    cleaned = (
-        raw.replace("\u00A0", "")
-           .replace("&nbsp;", "")
-           .replace(" ", "")
-           .strip()
-    )
-
+    raw = m.group(1)
+    cleaned = raw.replace("\u00A0", "").replace("&nbsp;", "").replace(" ", "").strip()
     try:
         return float(cleaned)
     except ValueError:
         return None
 
-
+# --- Существующий endpoint для одного товара ---
 @app.get("/price")
-def get_price(url: str = Query(..., description="Rozetka product URL")):
+def get_price(url: str):
     if not url.startswith("http"):
         raise HTTPException(status_code=400, detail="invalid url")
-
     try:
         html = fetch_rozetka_html(url)
     except Exception as e:
@@ -62,5 +57,20 @@ def get_price(url: str = Query(..., description="Rozetka product URL")):
     price = parse_price_from_html(html)
     if price is None:
         raise HTTPException(status_code=404, detail="price not found")
-
     return JSONResponse({"price": price})
+
+# --- Новый endpoint для нескольких товаров ---
+@app.post("/prices")
+def get_prices(request: LinksRequest):
+    results = []
+    for url in request.urls:
+        if not url.startswith("http"):
+            results.append("invalid url")
+            continue
+        try:
+            html = fetch_rozetka_html(url)
+            price = parse_price_from_html(html)
+            results.append(price if price is not None else "not found")
+        except Exception:
+            results.append("error")
+    return JSONResponse({"prices": results})
