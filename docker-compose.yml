@@ -1,0 +1,11 @@
+version: "3.9"
+
+services:
+  rozetka-price:
+    build: .
+    container_name: rozetka-price
+    ports:
+      - "9001:9001"
+    environment:
+      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+    restart: unless-stopped
