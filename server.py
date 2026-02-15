@@ -155,17 +155,37 @@ async def fetch_html(url: str) -> Tuple[str, int]:
 
 def extract_price(html: str) -> Optional[float]:
     try:
-        match = re.search(
+        matches = re.findall(
             r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
             html,
-            re.DOTALL
+            re.DOTALL | re.I
         )
-        if match:
-            data = json.loads(match.group(1))
-            if isinstance(data, dict) and "offers" in data:
-                return float(data["offers"]["price"])
+
+        for block in matches:
+            try:
+                data = json.loads(block)
+
+                # Если массив
+                if isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, dict) and item.get("@type") == "Product":
+                            offers = item.get("offers")
+                            if isinstance(offers, dict) and offers.get("price"):
+                                return float(offers["price"])
+
+                # Если объект
+                if isinstance(data, dict):
+                    if data.get("@type") == "Product":
+                        offers = data.get("offers")
+                        if isinstance(offers, dict) and offers.get("price"):
+                            return float(offers["price"])
+
+            except:
+                continue
+
     except:
         pass
+
     return None
 
 # ========================
