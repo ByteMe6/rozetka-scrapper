@@ -97,13 +97,17 @@ async def fetch_rozetka_html(url: str, context: BrowserContext) -> Tuple[str, in
         html = await page.content()
         html_size = len(html)
 
-        # Check if it's a valid product page
+        # Check if it's a valid product page (relaxed check)
         is_product_page = any(marker in html for marker in [
             'product-about',
             'product-main',
             'product-prices',
+            'product-price',
             'productId',
-            '"@type":"Product"'
+            'product_id',
+            '"@type":"Product"',
+            'rozetka.com.ua',
+            '/p' + url.split('/p')[-1].split('/')[0] if '/p' in url else ''
         ])
 
         # Detect 404 or error page
@@ -224,12 +228,20 @@ def parse_price_from_html(html: str) -> Optional[float]:
 def check_availability(html: str) -> str:
     """Check why product has no price"""
 
-    # Check if it's a valid product page first
+    # Check if it's a valid product page (relaxed)
     is_product = any(marker in html for marker in [
-        'product-about', 'product-main', 'productId', '"@type":"Product"'
+        'product-about', 'product-main', 'product-price', 'productId',
+        'product_id', '"@type":"Product"', 'data-goods-id'
     ])
 
+    # If HTML is very small (< 30KB), likely an error page
+    if len(html) < 30000:
+        is_product = False
+
     if not is_product:
+        # Check if it's actually a 404
+        if '404' in html or 'не знайдено' in html.lower() or 'not found' in html.lower():
+            return "page_not_found"
         return "invalid_page"
 
     # Check out of stock markers
