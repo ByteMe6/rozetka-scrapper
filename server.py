@@ -2,7 +2,7 @@ from fastapi import FastAPI, Request
 import uvicorn
 import asyncio
 from playwright.async_api import async_playwright
-from playwright_stealth import stealth_async
+from playwright_stealth import Stealth
 import json
 import time
 import random
@@ -10,28 +10,32 @@ import requests
 
 app = FastAPI()
 
-WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbxY_dIzWRVXaFPCW-6WfZB1Uhdh2Z5b-e-4lsWzYVz4psv-7RNJ6RNcgxnn8SFY9nxc/exec"  # Replace with your Apps Script webhook URL
+WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbxY_dIzWRVXaFPCW-6WfZB1Uhdh2Z5b-e-4lsWzYVz4psv-7RNJ6RNcgxnn8SFY9nxc/exec"  # Replace
 
 cache = {}
-CACHE_TTL = 3600  # 1 hour
+CACHE_TTL = 3600  # 1h
 
 
 async def scrape_price(url):
     if url in cache and time.time() - cache[url]['time'] < CACHE_TTL:
         return cache[url]['price']
 
-    async with async_playwright() as p:
+    async with Stealth().use_async(async_playwright()) as p:
         browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
-        await stealth_async(page)
-        await page.context.set_extra_http_headers({
-                                                      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"})
+        context = await browser.new_context()
+        page = await context.new_page()
+        # Extra stealth if needed
+        await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+
+        await context.set_extra_http_headers({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        })
 
         try:
             await page.goto(url, timeout=60000)
-            await asyncio.sleep(random.uniform(2, 5))  # Random delay for anti-bot
+            await asyncio.sleep(random.uniform(2, 5))
 
-            # Try JSON-LD
+            # JSON-LD
             scripts = await page.query_selector_all('script[type="application/ld+json"]')
             for script in scripts:
                 text = await script.inner_text()
@@ -45,7 +49,7 @@ async def scrape_price(url):
                 except:
                     pass
 
-            # Fallback HTML (adjust class if changes)
+            # Fallback HTML
             price_elem = await page.locator('.product-price__big, [itemprop="price"]').inner_text()
             price = price_elem.strip().replace('₴', '').replace(' ', '').replace('\xa0', '')
             cache[url] = {'price': price, 'time': time.time()}
@@ -67,7 +71,7 @@ async def process_batch(urls, webhook):
             if price:
                 prices[url] = price
                 break
-            await asyncio.sleep(5 + random.uniform(0, 3))  # Retry delay
+            await asyncio.sleep(5 + random.uniform(0, 3))
     if prices:
         requests.post(webhook, json={"data": prices})
 
@@ -82,4 +86,4 @@ async def update(request: Request):
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=9001)

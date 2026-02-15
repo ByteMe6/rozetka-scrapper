@@ -1,5 +1,5 @@
 fastapi
 uvicorn
 playwright
+playwright-stealth
 requests
-playwright_stealth
