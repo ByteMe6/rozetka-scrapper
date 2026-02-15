@@ -7,15 +7,31 @@ from playwright_stealth import Stealth
 import json
 import time
 import random
+from urllib.parse import urlparse
 
 app = FastAPI()
 
-cache = {}
+cache: dict[str, dict] = {}
 CACHE_TTL = 3600  # 1 час
-MAX_CONCURRENCY = 5  # параллельных вкладок
+MAX_CONCURRENCY = 5  # сколько страниц одновременно
+
+
+def is_valid_http_url(s: str) -> bool:
+    """Проверка, что строка выглядит как нормальный http/https URL."""
+    if not isinstance(s, str):
+        return False
+    s = s.strip()
+    if not s:
+        return False
+    try:
+        u = urlparse(s)
+        return u.scheme in ("http", "https") and bool(u.netloc)
+    except Exception:
+        return False
 
 
 async def scrape_price_single(page, url: str) -> str | None:
+    """Скрапит цену для одного товара в уже созданной вкладке."""
     # кэш
     if url in cache and time.time() - cache[url]["time"] < CACHE_TTL:
         return cache[url]["price"]
@@ -24,13 +40,14 @@ async def scrape_price_single(page, url: str) -> str | None:
         await page.goto(url, timeout=60000, wait_until="domcontentloaded")
         await asyncio.sleep(random.uniform(2, 5))
 
-        # JSON-LD
+        # 1) JSON-LD Product
         scripts = await page.query_selector_all('script[type="application/ld+json"]')
         for script in scripts:
             text = await script.inner_text()
             try:
                 data = json.loads(text)
-                # Rozetka иногда отдаёт массив
+
+                # Rozetka может отдавать список объектов
                 if isinstance(data, list):
                     for item in data:
                         price = extract_price_from_ld(item)
@@ -43,9 +60,10 @@ async def scrape_price_single(page, url: str) -> str | None:
                         cache[url] = {"price": price, "time": time.time()}
                         return price
             except Exception:
+                # иногда JSON битый — просто пропускаем
                 continue
 
-        # Fallback HTML по селекторам цены
+        # 2) Fallback HTML — по селекторам цены
         price_locator = page.locator(
             '.product-price__big, [itemprop="price"], .product-prices__big'
         )
@@ -62,12 +80,14 @@ async def scrape_price_single(page, url: str) -> str | None:
                 return price
 
         return None
+
     except Exception as e:
         print(f"Error scraping {url}: {e}")
         return None
 
 
 def extract_price_from_ld(item) -> str | None:
+    """Достать цену из JSON-LD объекта Product."""
     if not isinstance(item, dict):
         return None
     if item.get("@type") != "Product":
@@ -82,6 +102,7 @@ def extract_price_from_ld(item) -> str | None:
 
 
 async def scrape_batch(urls: list[str]) -> dict[str, str]:
+    """Параллельно скрапит батч URL-ов с ограничением по конкарренси."""
     results: dict[str, str] = {}
     semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
 
@@ -126,12 +147,18 @@ async def scrape_batch(urls: list[str]) -> dict[str, str]:
 @app.post("/update")
 async def update(request: Request):
     body = await request.json()
-    urls = body.get("urls", [])
+    raw_urls = body.get("urls", [])
+
+    # фильтруем мусор (типа "ссылка" и пустые строки)
+    urls = [u for u in raw_urls if is_valid_http_url(u)]
     if not urls:
+        print("No valid URLs received:", raw_urls)
         return {"data": {}}
 
+    print("Scraping URLs:", urls)
+
     prices = await scrape_batch(urls)
-    # формат: { "data": { url: price, ... } }
+    # формат ответа: { "data": { url: price, ... } }
     return {"data": prices}
 
 
