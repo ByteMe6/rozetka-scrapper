@@ -49,7 +49,7 @@ async def get_browser_context() -> BrowserContext:
 
 
 async def fetch_rozetka_html(url: str, context: BrowserContext) -> str:
-    """Fetch HTML using existing browser context with retry logic"""
+    """Fetch HTML using existing browser context with smart waiting"""
 
     # Ensure URL ends with /
     if not url.endswith('/'):
@@ -57,37 +57,54 @@ async def fetch_rozetka_html(url: str, context: BrowserContext) -> str:
 
     page = await context.new_page()
     try:
-        # Navigate with networkidle for better reliability
-        await page.goto(url, wait_until="networkidle", timeout=15000)
-
-        # Wait for Angular to render - try multiple selectors
+        # Try fast approach first (domcontentloaded)
         try:
-            await page.wait_for_selector(
-                'p.product-price__big, [class*="product-price__big"], .product-prices',
-                timeout=5000
-            )
-        except:
-            # If price element not found, wait a bit more
+            await page.goto(url, wait_until="domcontentloaded", timeout=10000)
+        except Exception as e:
+            print(f"⚠️  Timeout on domcontentloaded for {url}: {e}")
+            # Fallback: try with load
             try:
-                await page.wait_for_timeout(3000)
+                await page.goto(url, wait_until="load", timeout=15000)
+            except Exception as e2:
+                print(f"❌ Failed to load {url}: {e2}")
+                raise
+
+        # Wait for price element with multiple attempts
+        for attempt in range(3):
+            try:
+                await page.wait_for_selector(
+                    'p.product-price__big, [class*="product-price__big"]',
+                    timeout=2000
+                )
+                break  # Found it!
             except:
-                pass
+                if attempt < 2:
+                    # Wait a bit and try again
+                    await page.wait_for_timeout(1000)
+                else:
+                    # Last attempt failed, continue anyway
+                    pass
 
         html = await page.content()
+        html_size = len(html)
+        has_price_class = 'product-price__big' in html
 
         # Debug logging
-        has_price_class = 'product-price__big' in html
-        html_size = len(html)
-
-        # If HTML is suspiciously small, might be an error page
         if html_size < 50000:
             print(f"⚠️  Small HTML for {url}: {html_size} bytes, has_price={has_price_class}")
         else:
             print(f"✅ Fetched {url}: {html_size} bytes, has_price={has_price_class}")
 
         return html
+
+    except Exception as e:
+        print(f"❌ Error fetching {url}: {type(e).__name__}: {str(e)}")
+        raise
     finally:
-        await page.close()
+        try:
+            await page.close()
+        except:
+            pass
 
 
 def parse_price_from_html(html: str) -> Optional[float]:
