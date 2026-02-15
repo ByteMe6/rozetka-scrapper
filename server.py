@@ -19,6 +19,39 @@ browser_pool: List[BrowserContext] = []
 POOL_SIZE = 5  # 5 різних браузерів
 pool_index = 0
 
+# Rate limiting even with pool (IP-based protection)
+request_times = []
+MIN_DELAY_BETWEEN_REQUESTS = 2.0  # seconds
+
+
+async def smart_delay():
+    """Add delay to avoid IP-based rate limiting"""
+    global request_times
+    now = datetime.now()
+
+    # Clean old requests (older than 60 seconds)
+    request_times = [t for t in request_times if (now - t).total_seconds() < 60]
+
+    # If we have recent requests, enforce minimum delay
+    if request_times:
+        last_request = max(request_times)
+        time_since_last = (now - last_request).total_seconds()
+
+        if time_since_last < MIN_DELAY_BETWEEN_REQUESTS:
+            wait_time = MIN_DELAY_BETWEEN_REQUESTS - time_since_last + random.uniform(0.2, 0.5)
+            print(f"⏸️  Waiting {wait_time:.1f}s...")
+            await asyncio.sleep(wait_time)
+
+    # Check if too many requests in last 60 seconds
+    if len(request_times) >= 15:  # max 15 per minute
+        oldest = min(request_times)
+        wait_time = 60 - (now - oldest).total_seconds() + random.uniform(1, 3)
+        print(f"⏸️  Rate limit: waiting {wait_time:.1f}s...")
+        await asyncio.sleep(wait_time)
+        request_times.clear()
+
+    request_times.append(datetime.now())
+
 
 # --- Models ---
 class LinksRequest(BaseModel):
@@ -205,8 +238,11 @@ def get_next_browser() -> BrowserContext:
 
 async def fetch_rozetka_html(url: str) -> Tuple[str, int]:
     """
-    Fetch with rotating browser contexts (no IP ban!)
+    Fetch with rotating browser contexts + smart delays
     """
+
+    # SMART DELAY to avoid IP ban
+    await smart_delay()
 
     # Ensure URL ends with /
     if not url.endswith('/'):
