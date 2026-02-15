@@ -49,19 +49,27 @@ async def get_browser_context() -> BrowserContext:
 
 
 async def fetch_rozetka_html(url: str, context: BrowserContext) -> str:
-    """Fetch HTML using existing browser context"""
+    """Fetch HTML using existing browser context with retry logic"""
+
+    # Ensure URL ends with /
+    if not url.endswith('/'):
+        url += '/'
+
     page = await context.new_page()
     try:
-        # Navigate to page
-        await page.goto(url, wait_until="domcontentloaded", timeout=10000)
+        # Navigate with networkidle for better reliability
+        await page.goto(url, wait_until="networkidle", timeout=15000)
 
-        # Wait for Angular to render - try price element first
+        # Wait for Angular to render - try multiple selectors
         try:
-            await page.wait_for_selector('p.product-price__big, [class*="product-price__big"]', timeout=3000)
+            await page.wait_for_selector(
+                'p.product-price__big, [class*="product-price__big"], .product-prices',
+                timeout=5000
+            )
         except:
-            # If price element not found, wait a bit more for Angular
+            # If price element not found, wait a bit more
             try:
-                await page.wait_for_timeout(2000)
+                await page.wait_for_timeout(3000)
             except:
                 pass
 
@@ -69,7 +77,13 @@ async def fetch_rozetka_html(url: str, context: BrowserContext) -> str:
 
         # Debug logging
         has_price_class = 'product-price__big' in html
-        print(f"Fetched {url}: HTML length={len(html)}, has_price_class={has_price_class}")
+        html_size = len(html)
+
+        # If HTML is suspiciously small, might be an error page
+        if html_size < 50000:
+            print(f"⚠️  Small HTML for {url}: {html_size} bytes, has_price={has_price_class}")
+        else:
+            print(f"✅ Fetched {url}: {html_size} bytes, has_price={has_price_class}")
 
         return html
     finally:
