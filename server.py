@@ -37,7 +37,7 @@ async def update():
         "https://hard.rozetka.com.ua/ua/amd-100-100000457box/p342325708/"
     ]
 
-    for index, url in enumerate(urls, start=2):  # row 2 in sheet
+    for index, url in enumerate(urls, start=4):  # row 2 in sheet
         price = await scrape_price(url)
 
         requests.post(WEBHOOK_URL, json={
