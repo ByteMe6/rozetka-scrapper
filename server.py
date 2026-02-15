@@ -4,7 +4,7 @@ import requests
 from fastapi import FastAPI
 from playwright.async_api import async_playwright
 
-WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbwt1suUTQNxwqTpJ0fk__WSfH_XvHBeQ32TJfqI33J1fnlHub1xSEdLvKKd6MxPbjhT/exec"
+WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbzCZTD-B3XZ74wfLqcs8108M8-DyIyoF05o0xHgnZH8hK-PH7uN3nDKgR26UmNLAyE/exec"
 
 app = FastAPI()
 
