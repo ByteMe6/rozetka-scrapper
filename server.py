@@ -52,51 +52,102 @@ async def fetch_rozetka_html(url: str, context: BrowserContext) -> str:
     """Fetch HTML using existing browser context"""
     page = await context.new_page()
     try:
-        # Use domcontentloaded instead of networkidle - much faster!
+        # Navigate to page
         await page.goto(url, wait_until="domcontentloaded", timeout=10000)
 
-        # Wait for price element specifically (faster than full page load)
+        # Wait for Angular to render - try price element first
         try:
-            await page.wait_for_selector('p.product-price__big', timeout=3000)
+            await page.wait_for_selector('p.product-price__big, [class*="product-price__big"]', timeout=3000)
         except:
-            pass  # Continue even if selector not found
+            # If price element not found, wait a bit more for Angular
+            try:
+                await page.wait_for_timeout(2000)
+            except:
+                pass
 
         html = await page.content()
+
+        # Debug logging
+        has_price_class = 'product-price__big' in html
+        print(f"Fetched {url}: HTML length={len(html)}, has_price_class={has_price_class}")
+
         return html
     finally:
         await page.close()
 
 
 def parse_price_from_html(html: str) -> Optional[float]:
-    """Extract price from HTML with multiple patterns"""
+    """Extract price from HTML with multiple patterns for old and new templates"""
 
-    # Pattern 1: Main price with span
+    # Pattern 1: NEW Angular template - price before <span with currency
+    # Example: <p _ngcontent...class="product-price__big...">899<span class="ms-1">₴</span>
     m = re.search(
-        r'<p[^>]*class="[^"]*product-price__big[^"]*"[^>]*>([^<]+)<span',
+        r'class="[^"]*product-price__big[^"]*"[^>]*>\s*(\d+(?:\s*\d+)*)\s*<span',
         html,
-        re.I
+        re.I | re.DOTALL
     )
 
     if not m:
-        # Pattern 2: Price without span
+        # Pattern 2: With Angular attributes first
+        # <p _ngcontent-xxx class="product-price__big">899<span>
         m = re.search(
-            r'<p[^>]*class="[^"]*product-price__big[^"]*"[^>]*>([0-9\s\u00A0]+)',
+            r'<p[^>]*product-price__big[^>]*>\s*(\d+(?:\s*\d+)*)\s*<span',
+            html,
+            re.I | re.DOTALL
+        )
+
+    if not m:
+        # Pattern 3: OLD template - price with text before span
+        m = re.search(
+            r'<p[^>]*class="[^"]*product-price__big[^"]*"[^>]*>([^<]+)<span',
             html,
             re.I
         )
 
     if not m:
-        # Pattern 3: JSON-LD schema.org
+        # Pattern 4: Price without span
+        m = re.search(
+            r'product-price__big[^>]*>\s*([0-9\s\u00A0]+)',
+            html,
+            re.I
+        )
+
+    if not m:
+        # Pattern 5: JSON-LD schema.org
         m = re.search(r'"price":\s*"?(\d+)"?', html, re.I)
 
     if not m:
-        # Pattern 4: data-price attribute
+        # Pattern 6: data-price attribute
         m = re.search(r'data-price="(\d+)"', html, re.I)
 
     if not m:
         return None
 
     raw = m.group(1)
+    # Clean: remove all spaces, non-breaking spaces, quotes, and other non-digits
+    cleaned = raw.replace("\u00A0", "").replace("&nbsp;", "").replace(" ", "").replace('"', "").strip()
+    # Remove any remaining non-digit characters except decimal point
+    cleaned = ''.join(c for c in cleaned if c.isdigit() or c == '.')
+
+    if not cleaned:
+        return None
+
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+        # Pattern 4: JSON-LD schema.org
+        m = re.search(r'"price":\s*"?(\d+)"?', html, re.I)
+
+    if not m:
+        # Pattern 5: data-price attribute
+        m = re.search(r'data-price="(\d+)"', html, re.I)
+
+    if not m:
+        return None
+
+    raw = m.group(1)
+    # Remove all spaces, non-breaking spaces, quotes
     cleaned = raw.replace("\u00A0", "").replace("&nbsp;", "").replace(" ", "").replace('"', "").strip()
 
     try:
