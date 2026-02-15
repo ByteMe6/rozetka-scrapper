@@ -11,7 +11,7 @@ import requests
 
 app = FastAPI()
 
-WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbxgEKCOZlUDR93EMbfF2OD3WMp3rqzxjESFwWN05-rLj2T-F3NH1HJlq6YFnBOtxuQ6/exec"
+WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbySRMOHgdYR0b3VvNYauwCEIYqEpmBXSXrH5x97hqsqXkbj5cdY2xZ6ktgeD47FqY6t/exec"
 
 cache = {}
 CACHE_TTL = 3600  # 1 час
