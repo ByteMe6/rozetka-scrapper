@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from playwright.async_api import async_playwright, Browser, BrowserContext, Playwright
-from playwright_stealth import Stealth
+from playwright_stealth import stealth_async
 import re
 from typing import List, Optional, Tuple
 import json
@@ -166,8 +166,7 @@ async def fetch_rozetka_html(url: str) -> Tuple[str, int]:
     page = await context.new_page()
 
     # 🥷 APPLY STEALTH (this is the magic!)
-    stealth = Stealth()
-    await stealth.apply_async(page)
+    await stealth_async(page)
 
     try:
         await page.wait_for_timeout(random.randint(500, 1000))
