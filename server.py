@@ -7,15 +7,12 @@ from playwright_stealth import Stealth
 import json
 import time
 import random
-import requests
 
 app = FastAPI()
 
-WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbySRMOHgdYR0b3VvNYauwCEIYqEpmBXSXrH5x97hqsqXkbj5cdY2xZ6ktgeD47FqY6t/exec"
-
 cache = {}
 CACHE_TTL = 3600  # 1 час
-MAX_CONCURRENCY = 5  # сколько страниц одновременно открываем (баланс скорость/баны)
+MAX_CONCURRENCY = 5  # параллельных вкладок
 
 
 async def scrape_price_single(page, url: str) -> str | None:
@@ -33,34 +30,22 @@ async def scrape_price_single(page, url: str) -> str | None:
             text = await script.inner_text()
             try:
                 data = json.loads(text)
-                # иногда там массив из Product
+                # Rozetka иногда отдаёт массив
                 if isinstance(data, list):
                     for item in data:
-                        if item.get("@type") == "Product" and "offers" in item:
-                            offers = item["offers"]
-                            price = (
-                                offers.get("price")
-                                or offers.get("lowPrice")
-                                or offers.get("highPrice")
-                            )
-                            if price:
-                                cache[url] = {"price": price, "time": time.time()}
-                                return str(price)
-                else:
-                    if data.get("@type") == "Product" and "offers" in data:
-                        offers = data["offers"]
-                        price = (
-                            offers.get("price")
-                            or offers.get("lowPrice")
-                            or offers.get("highPrice")
-                        )
+                        price = extract_price_from_ld(item)
                         if price:
                             cache[url] = {"price": price, "time": time.time()}
-                            return str(price)
+                            return price
+                else:
+                    price = extract_price_from_ld(data)
+                    if price:
+                        cache[url] = {"price": price, "time": time.time()}
+                        return price
             except Exception:
                 continue
 
-        # Fallback HTML – подстраховка по селекторам
+        # Fallback HTML по селекторам цены
         price_locator = page.locator(
             '.product-price__big, [itemprop="price"], .product-prices__big'
         )
@@ -80,6 +65,20 @@ async def scrape_price_single(page, url: str) -> str | None:
     except Exception as e:
         print(f"Error scraping {url}: {e}")
         return None
+
+
+def extract_price_from_ld(item) -> str | None:
+    if not isinstance(item, dict):
+        return None
+    if item.get("@type") != "Product":
+        return None
+    offers = item.get("offers")
+    if not offers:
+        return None
+    price = offers.get("price") or offers.get("lowPrice") or offers.get("highPrice")
+    if not price:
+        return None
+    return str(price).replace(" ", "")
 
 
 async def scrape_batch(urls: list[str]) -> dict[str, str]:
@@ -124,34 +123,16 @@ async def scrape_batch(urls: list[str]) -> dict[str, str]:
     return results
 
 
-async def process_batch(urls: list[str], webhook: str):
-    if not urls:
-        return
-
-    try:
-        prices = await scrape_batch(urls)
-        if prices:
-            print("SENDING TO WEBHOOK:", webhook, prices)  # <<< добавь
-
-            # отправка обратно в Apps Script
-            try:
-                requests.post(webhook, json={"data": prices}, timeout=30)
-            except Exception as e:
-                print(f"Error posting to webhook: {e}")
-    except Exception as e:
-        print(f"Error in process_batch: {e}")
-
-
 @app.post("/update")
 async def update(request: Request):
     body = await request.json()
     urls = body.get("urls", [])
-    webhook = body.get("webhook", WEBHOOK_URL)
+    if not urls:
+        return {"data": {}}
 
-    # ВАЖНО: НЕ ждём окончания, запускаем в фоне
-    asyncio.create_task(process_batch(urls, webhook))
-
-    return {"status": "processing"}
+    prices = await scrape_batch(urls)
+    # формат: { "data": { url: price, ... } }
+    return {"data": prices}
 
 
 if __name__ == "__main__":
