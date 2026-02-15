@@ -22,8 +22,8 @@ pool_index = 0
 
 # Rate limiting
 request_times = []
-MIN_DELAY_BETWEEN_REQUESTS = 2.5
-MAX_REQUESTS_PER_MINUTE = 12
+MIN_DELAY_BETWEEN_REQUESTS = 4.0
+MAX_REQUESTS_PER_MINUTE = 8
 
 
 # --- Models ---
