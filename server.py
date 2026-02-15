@@ -131,6 +131,8 @@ async def process_batch(urls: list[str], webhook: str):
     try:
         prices = await scrape_batch(urls)
         if prices:
+            print("SENDING TO WEBHOOK:", webhook, prices)  # <<< добавь
+
             # отправка обратно в Apps Script
             try:
                 requests.post(webhook, json={"data": prices}, timeout=30)
