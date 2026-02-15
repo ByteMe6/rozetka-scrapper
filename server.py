@@ -130,6 +130,14 @@ async def get_price(url: str):
     if not url.startswith("http"):
         raise HTTPException(status_code=400, detail="invalid url")
 
+    # Normalize URL: ensure it ends with /
+    if not url.endswith('/'):
+        url += '/'
+
+    # Only support Rozetka URLs
+    if 'rozetka.com.ua' not in url:
+        raise HTTPException(status_code=400, detail="only rozetka urls supported")
+
     try:
         context = await get_browser_context()
         html = await fetch_rozetka_html(url, context)
@@ -168,7 +176,17 @@ async def get_prices(request: LinksRequest):
     results = []
 
     for url in request.urls:
+        # Normalize URL
+        if url and isinstance(url, str):
+            if not url.endswith('/'):
+                url += '/'
+
         if not url or not url.startswith("http"):
+            results.append("invalid url")
+            continue
+
+        # Only support Rozetka
+        if 'rozetka.com.ua' not in url:
             results.append("invalid url")
             continue
 
