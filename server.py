@@ -1,48 +1,85 @@
-import re
+from fastapi import FastAPI, Request
+import uvicorn
 import asyncio
-import requests
-from fastapi import FastAPI
 from playwright.async_api import async_playwright
-
-WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbzCZTD-B3XZ74wfLqcs8108M8-DyIyoF05o0xHgnZH8hK-PH7uN3nDKgR26UmNLAyE/exec"
+from playwright_stealth import stealth_async
+import json
+import time
+import random
+import requests
 
 app = FastAPI()
 
+WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbyHwmQ53fHmg28bre5MEv4FxxLykTpj5G9d1WLcmQPnNLYEz_LpElVKXtYsaZYG-Nzv/exec"  # Replace with your Apps Script webhook URL
 
-async def scrape_price(url: str):
+cache = {}
+CACHE_TTL = 3600  # 1 hour
+
+
+async def scrape_price(url):
+    if url in cache and time.time() - cache[url]['time'] < CACHE_TTL:
+        return cache[url]['price']
+
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
+        await stealth_async(page)
+        await page.context.set_extra_http_headers({
+                                                      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"})
 
-        await page.goto(url, timeout=60000)
-        await page.wait_for_timeout(3000)
+        try:
+            await page.goto(url, timeout=60000)
+            await asyncio.sleep(random.uniform(2, 5))  # Random delay for anti-bot
 
-        content = await page.content()
-        await browser.close()
+            # Try JSON-LD
+            scripts = await page.query_selector_all('script[type="application/ld+json"]')
+            for script in scripts:
+                text = await script.inner_text()
+                try:
+                    data = json.loads(text)
+                    if '@type' in data and data['@type'] == 'Product' and 'offers' in data:
+                        price = data['offers'].get('price') or data['offers'].get('lowPrice')
+                        if price:
+                            cache[url] = {'price': price, 'time': time.time()}
+                            return price
+                except:
+                    pass
 
-        match = re.search(r'"price":\s?([\d.]+)', content)
-        if match:
-            return float(match.group(1))
+            # Fallback HTML (adjust class if changes)
+            price_elem = await page.locator('.product-price__big, [itemprop="price"]').inner_text()
+            price = price_elem.strip().replace('₴', '').replace(' ', '').replace('\xa0', '')
+            cache[url] = {'price': price, 'time': time.time()}
+            return price
 
-        match2 = re.search(r'(\d[\d\s]+)₴', content)
-        if match2:
-            return float(match2.group(1).replace(" ", ""))
+        except Exception as e:
+            print(f"Error scraping {url}: {e}")
+            return None
 
-        return None
+        finally:
+            await browser.close()
 
 
-@app.get("/update")
-async def update():
-    urls = [
-        "https://hard.rozetka.com.ua/ua/amd-100-100000457box/p342325708/"
-    ]
+async def process_batch(urls, webhook):
+    prices = {}
+    for url in urls:
+        for retry in range(3):
+            price = await scrape_price(url)
+            if price:
+                prices[url] = price
+                break
+            await asyncio.sleep(5 + random.uniform(0, 3))  # Retry delay
+    if prices:
+        requests.post(webhook, json={"data": prices})
 
-    for index, url in enumerate(urls, start=4):  # row 2 in sheet
-        price = await scrape_price(url)
 
-        requests.post(WEBHOOK_URL, json={
-            "row": index,
-            "price": price
-        })
+@app.post("/update")
+async def update(request: Request):
+    body = await request.json()
+    urls = body.get('urls', [])
+    webhook = body.get('webhook', WEBHOOK_URL)
+    asyncio.create_task(process_batch(urls, webhook))
+    return {"status": "processing"}
 
-    return {"status": "done"}
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
