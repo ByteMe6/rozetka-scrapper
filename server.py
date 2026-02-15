@@ -21,13 +21,14 @@ class LinksRequest(BaseModel):
 
 # --- Browser Management ---
 async def get_browser_context() -> BrowserContext:
-    """Get or create browser context with anti-detection"""
+    """Get or create browser context with MAXIMUM stealth (100% human-like)"""
     global playwright_instance, browser, context
 
     if context is None or browser is None:
         if playwright_instance is None:
             playwright_instance = await async_playwright().start()
 
+        # Launch with MAXIMUM stealth
         browser = await playwright_instance.chromium.launch(
             headless=True,
             args=[
@@ -37,9 +38,26 @@ async def get_browser_context() -> BrowserContext:
                 '--disable-setuid-sandbox',
                 '--disable-web-security',
                 '--disable-features=IsolateOrigins,site-per-process',
-                '--disable-site-isolation-trials'
+                '--disable-site-isolation-trials',
+                '--ignore-certificate-errors',
+                '--no-first-run',
+                '--no-default-browser-check',
+                '--disable-infobars',
+                '--window-size=1920,1080',
+                '--disable-background-timer-throttling',
+                '--disable-backgrounding-occluded-windows',
+                '--disable-renderer-backgrounding',
+                '--disable-ipc-flooding-protection',
+                '--password-store=basic',
+                '--use-mock-keychain',
+                '--disable-hang-monitor',
+                '--disable-prompt-on-repost',
+                '--metrics-recording-only',
+                '--safebrowsing-disable-auto-update',
+                '--enable-automation=false'
             ]
         )
+
         context = await browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -48,10 +66,18 @@ async def get_browser_context() -> BrowserContext:
             ),
             locale="uk-UA",
             viewport={"width": 1920, "height": 1080},
+            screen={"width": 1920, "height": 1080},
+            device_scale_factor=1,
+            is_mobile=False,
+            has_touch=False,
+            timezone_id="Europe/Kiev",
+            geolocation={"latitude": 50.4501, "longitude": 30.5234},  # Kyiv
+            permissions=["geolocation"],
+            color_scheme="light",
             extra_http_headers={
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-                "Accept-Language": "uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7",
-                "Accept-Encoding": "gzip, deflate, br",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+                "Accept-Language": "uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7,ru;q=0.6",
+                "Accept-Encoding": "gzip, deflate, br, zstd",
                 "DNT": "1",
                 "Connection": "keep-alive",
                 "Upgrade-Insecure-Requests": "1",
@@ -59,39 +85,120 @@ async def get_browser_context() -> BrowserContext:
                 "Sec-Fetch-Mode": "navigate",
                 "Sec-Fetch-Site": "none",
                 "Sec-Fetch-User": "?1",
+                "Sec-Ch-Ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+                "Sec-Ch-Ua-Mobile": "?0",
+                "Sec-Ch-Ua-Platform": '"Windows"',
                 "Cache-Control": "max-age=0"
             }
         )
 
-        # Add anti-detection scripts
+        # MAXIMUM anti-detection scripts (like real browser)
         await context.add_init_script("""
-            // Hide webdriver
+            // Remove webdriver property
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => undefined
             });
 
-            // Mock plugins
+            // Add real plugins
             Object.defineProperty(navigator, 'plugins', {
-                get: () => [1, 2, 3, 4, 5]
+                get: () => {
+                    return [
+                        {
+                            0: {type: "application/x-google-chrome-pdf", suffixes: "pdf", description: "Portable Document Format"},
+                            description: "Portable Document Format",
+                            filename: "internal-pdf-viewer",
+                            length: 1,
+                            name: "Chrome PDF Plugin"
+                        },
+                        {
+                            0: {type: "application/pdf", suffixes: "pdf", description: ""},
+                            description: "",
+                            filename: "mhjfbmdgcfjbbpaeojofohoefgiehjai",
+                            length: 1,
+                            name: "Chrome PDF Viewer"
+                        },
+                        {
+                            0: {type: "application/x-nacl", suffixes: "", description: "Native Client Executable"},
+                            1: {type: "application/x-pnacl", suffixes: "", description: "Portable Native Client Executable"},
+                            description: "",
+                            filename: "internal-nacl-plugin",
+                            length: 2,
+                            name: "Native Client"
+                        }
+                    ];
+                }
             });
 
-            // Mock languages
+            // Real languages
             Object.defineProperty(navigator, 'languages', {
-                get: () => ['uk-UA', 'uk', 'en-US', 'en']
+                get: () => ['uk-UA', 'uk', 'en-US', 'en', 'ru']
             });
 
-            // Chrome runtime
+            // Chrome object
             window.chrome = {
-                runtime: {}
+                runtime: {},
+                loadTimes: function() {},
+                csi: function() {},
+                app: {}
             };
 
-            // Permissions
+            // Permissions API
             const originalQuery = window.navigator.permissions.query;
             window.navigator.permissions.query = (parameters) => (
                 parameters.name === 'notifications' ?
                     Promise.resolve({ state: Notification.permission }) :
                     originalQuery(parameters)
             );
+
+            // Add real connection info
+            Object.defineProperty(navigator, 'connection', {
+                get: () => ({
+                    effectiveType: '4g',
+                    rtt: 50,
+                    downlink: 10,
+                    saveData: false
+                })
+            });
+
+            // Real hardware concurrency
+            Object.defineProperty(navigator, 'hardwareConcurrency', {
+                get: () => 8
+            });
+
+            // Real device memory
+            Object.defineProperty(navigator, 'deviceMemory', {
+                get: () => 8
+            });
+
+            // Battery API (make it async like real)
+            navigator.getBattery = () => Promise.resolve({
+                charging: true,
+                chargingTime: 0,
+                dischargingTime: Infinity,
+                level: 1
+            });
+
+            // Screen properties
+            Object.defineProperty(screen, 'availWidth', {get: () => 1920});
+            Object.defineProperty(screen, 'availHeight', {get: () => 1040});
+            Object.defineProperty(screen, 'colorDepth', {get: () => 24});
+            Object.defineProperty(screen, 'pixelDepth', {get: () => 24});
+
+            // Override toString to hide proxy
+            const originalToString = Function.prototype.toString;
+            Function.prototype.toString = function() {
+                if (this === navigator.permissions.query) {
+                    return 'function query() { [native code] }';
+                }
+                return originalToString.apply(this, arguments);
+            };
+
+            // Add media devices
+            navigator.mediaDevices.enumerateDevices = () => Promise.resolve([
+                {deviceId: "default", kind: "audioinput", label: "", groupId: "default"},
+                {deviceId: "default", kind: "audiooutput", label: "", groupId: "default"},
+                {deviceId: "default", kind: "videoinput", label: "", groupId: "default"}
+            ]);
         """)
 
     return context
@@ -99,7 +206,7 @@ async def get_browser_context() -> BrowserContext:
 
 async def fetch_rozetka_html(url: str, context: BrowserContext) -> Tuple[str, int]:
     """
-    Fetch HTML with smart strategies
+    Fetch HTML with HUMAN-LIKE behavior
     Returns: (html, status_code)
     """
 
@@ -110,6 +217,10 @@ async def fetch_rozetka_html(url: str, context: BrowserContext) -> Tuple[str, in
     page = await context.new_page()
 
     try:
+        # Human-like: random delay before navigation (0.5-1.5 seconds)
+        import random
+        await page.wait_for_timeout(random.randint(500, 1500))
+
         # Strategy 1: Fast load with domcontentloaded
         try:
             response = await page.goto(url, wait_until="domcontentloaded", timeout=10000)
@@ -124,6 +235,17 @@ async def fetch_rozetka_html(url: str, context: BrowserContext) -> Tuple[str, in
                 print(f"❌ Strategy 2 failed for {url}: {e2}")
                 return ("", 502)
 
+        # Human-like: random delay after page load (1-2 seconds)
+        await page.wait_for_timeout(random.randint(1000, 2000))
+
+        # Human-like: simulate mouse movement
+        try:
+            await page.mouse.move(random.randint(100, 500), random.randint(100, 500))
+            await page.wait_for_timeout(random.randint(100, 300))
+            await page.mouse.move(random.randint(600, 1200), random.randint(200, 800))
+        except:
+            pass
+
         # Wait for Angular/React to render - multiple attempts
         for attempt in range(3):
             try:
@@ -135,13 +257,18 @@ async def fetch_rozetka_html(url: str, context: BrowserContext) -> Tuple[str, in
                 break
             except:
                 if attempt < 2:
-                    await page.wait_for_timeout(1500)
+                    # Human-like: random scroll
+                    try:
+                        await page.evaluate(f'window.scrollTo(0, {random.randint(100, 500)})')
+                        await page.wait_for_timeout(random.randint(800, 1500))
+                    except:
+                        await page.wait_for_timeout(1500)
 
         # Get HTML
         html = await page.content()
         html_size = len(html)
 
-        # Check if it's a valid product page (relaxed check)
+        # Check if it's a valid product page
         is_product_page = any(marker in html for marker in [
             'product-about',
             'product-main',
@@ -150,8 +277,7 @@ async def fetch_rozetka_html(url: str, context: BrowserContext) -> Tuple[str, in
             'productId',
             'product_id',
             '"@type":"Product"',
-            'rozetka.com.ua',
-            '/p' + url.split('/p')[-1].split('/')[0] if '/p' in url else ''
+            'data-goods-id'
         ])
 
         # Detect 404 or error page
