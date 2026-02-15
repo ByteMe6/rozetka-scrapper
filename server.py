@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from playwright.async_api import async_playwright, Browser, BrowserContext, Playwright
+from playwright_stealth import stealth_async
 import re
 from typing import List, Optional, Tuple
 import json
@@ -16,41 +17,13 @@ app = FastAPI()
 playwright_instance: Optional[Playwright] = None
 browser: Optional[Browser] = None
 browser_pool: List[BrowserContext] = []
-POOL_SIZE = 5  # 5 різних браузерів
+POOL_SIZE = 5
 pool_index = 0
 
-# Rate limiting even with pool (IP-based protection)
+# Rate limiting
 request_times = []
-MIN_DELAY_BETWEEN_REQUESTS = 2.0  # seconds
-
-
-async def smart_delay():
-    """Add delay to avoid IP-based rate limiting"""
-    global request_times
-    now = datetime.now()
-
-    # Clean old requests (older than 60 seconds)
-    request_times = [t for t in request_times if (now - t).total_seconds() < 60]
-
-    # If we have recent requests, enforce minimum delay
-    if request_times:
-        last_request = max(request_times)
-        time_since_last = (now - last_request).total_seconds()
-
-        if time_since_last < MIN_DELAY_BETWEEN_REQUESTS:
-            wait_time = MIN_DELAY_BETWEEN_REQUESTS - time_since_last + random.uniform(0.2, 0.5)
-            print(f"⏸️  Waiting {wait_time:.1f}s...")
-            await asyncio.sleep(wait_time)
-
-    # Check if too many requests in last 60 seconds
-    if len(request_times) >= 15:  # max 15 per minute
-        oldest = min(request_times)
-        wait_time = 60 - (now - oldest).total_seconds() + random.uniform(1, 3)
-        print(f"⏸️  Rate limit: waiting {wait_time:.1f}s...")
-        await asyncio.sleep(wait_time)
-        request_times.clear()
-
-    request_times.append(datetime.now())
+MIN_DELAY_BETWEEN_REQUESTS = 2.5
+MAX_REQUESTS_PER_MINUTE = 12
 
 
 # --- Models ---
@@ -58,13 +31,37 @@ class LinksRequest(BaseModel):
     urls: List[str]
 
 
-# --- Browser fingerprints ---
+async def smart_delay():
+    """Smart rate limiting"""
+    global request_times
+    now = datetime.now()
+
+    request_times = [t for t in request_times if (now - t).total_seconds() < 60]
+
+    if request_times:
+        last_request = max(request_times)
+        time_since_last = (now - last_request).total_seconds()
+
+        if time_since_last < MIN_DELAY_BETWEEN_REQUESTS:
+            wait_time = MIN_DELAY_BETWEEN_REQUESTS - time_since_last + random.uniform(0.3, 0.7)
+            await asyncio.sleep(wait_time)
+
+    if len(request_times) >= MAX_REQUESTS_PER_MINUTE:
+        oldest = min(request_times)
+        wait_time = 60 - (now - oldest).total_seconds() + random.uniform(2, 4)
+        print(f"⏸️  Rate limit: waiting {wait_time:.1f}s...")
+        await asyncio.sleep(wait_time)
+        request_times.clear()
+
+    request_times.append(datetime.now())
+
+
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15"
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 ]
 
 VIEWPORTS = [
@@ -72,20 +69,16 @@ VIEWPORTS = [
     {"width": 1366, "height": 768},
     {"width": 1536, "height": 864},
     {"width": 1440, "height": 900},
-    {"width": 2560, "height": 1440}
+    {"width": 1280, "height": 720}
 ]
 
 
 async def create_browser_context(index: int) -> BrowserContext:
-    """Create unique browser context with different fingerprint"""
+    """Create stealth browser context"""
     global browser
 
     ua = USER_AGENTS[index % len(USER_AGENTS)]
     vp = VIEWPORTS[index % len(VIEWPORTS)]
-
-    # Vary geolocation slightly
-    lat = 50.4501 + random.uniform(-0.1, 0.1)
-    lon = 30.5234 + random.uniform(-0.1, 0.1)
 
     context = await browser.new_context(
         user_agent=ua,
@@ -96,97 +89,23 @@ async def create_browser_context(index: int) -> BrowserContext:
         is_mobile=False,
         has_touch=False,
         timezone_id="Europe/Kiev",
-        geolocation={"latitude": lat, "longitude": lon},
+        geolocation={
+            "latitude": 50.4501 + random.uniform(-0.05, 0.05),
+            "longitude": 30.5234 + random.uniform(-0.05, 0.05)
+        },
         permissions=["geolocation"],
         color_scheme="light",
         extra_http_headers={
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Accept-Encoding": "gzip, deflate, br, zstd",
+            "Accept-Encoding": "gzip, deflate, br",
             "DNT": "1",
             "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
-            "Sec-Ch-Ua": f'"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="{20 + index}"',
-            "Sec-Ch-Ua-Mobile": "?0",
-            "Sec-Ch-Ua-Platform": '"Windows"',
-            "Cache-Control": "max-age=0"
+            "Upgrade-Insecure-Requests": "1"
         }
     )
 
-    # Vary hardware specs
-    cores = [4, 6, 8, 12, 16][index % 5]
-    memory = [4, 8, 16, 32][index % 4]
-
-    await context.add_init_script(f"""
-        // Remove webdriver
-        Object.defineProperty(navigator, 'webdriver', {{
-            get: () => undefined
-        }});
-
-        // Real plugins
-        Object.defineProperty(navigator, 'plugins', {{
-            get: () => {{
-                return [
-                    {{
-                        0: {{type: "application/x-google-chrome-pdf", suffixes: "pdf", description: "Portable Document Format"}},
-                        description: "Portable Document Format",
-                        filename: "internal-pdf-viewer",
-                        length: 1,
-                        name: "Chrome PDF Plugin"
-                    }},
-                    {{
-                        0: {{type: "application/pdf", suffixes: "pdf", description: ""}},
-                        description: "",
-                        filename: "mhjfbmdgcfjbbpaeojofohoefgiehjai",
-                        length: 1,
-                        name: "Chrome PDF Viewer"
-                    }}
-                ];
-            }}
-        }});
-
-        Object.defineProperty(navigator, 'languages', {{
-            get: () => ['uk-UA', 'uk', 'en-US', 'en']
-        }});
-
-        window.chrome = {{
-            runtime: {{}},
-            loadTimes: function() {{}},
-            csi: function() {{}}
-        }};
-
-        // Vary hardware
-        Object.defineProperty(navigator, 'hardwareConcurrency', {{
-            get: () => {cores}
-        }});
-
-        Object.defineProperty(navigator, 'deviceMemory', {{
-            get: () => {memory}
-        }});
-
-        Object.defineProperty(navigator, 'connection', {{
-            get: () => ({{
-                effectiveType: '4g',
-                rtt: {40 + index * 10},
-                downlink: {8 + index * 2},
-                saveData: false
-            }})
-        }});
-
-        navigator.getBattery = () => Promise.resolve({{
-            charging: {str(index % 2 == 0).lower()},
-            chargingTime: 0,
-            dischargingTime: Infinity,
-            level: {0.7 + (index * 0.05)}
-        }});
-    """)
-
-    print(
-        f"🌐 Created browser #{index + 1}: {ua.split('Chrome/')[1].split(' ')[0] if 'Chrome' in ua else 'Firefox'}, {vp['width']}x{vp['height']}, {cores} cores")
+    print(f"🌐 Browser #{index + 1}: {vp['width']}x{vp['height']}")
 
     return context
 
@@ -212,24 +131,21 @@ async def get_browser_pool() -> List[BrowserContext]:
                     '--ignore-certificate-errors',
                     '--no-first-run',
                     '--disable-infobars',
-                    '--disable-background-timer-throttling',
-                    '--disable-backgrounding-occluded-windows',
-                    '--disable-renderer-backgrounding'
+                    '--window-size=1920,1080'
                 ]
             )
 
-        # Create pool of browsers
-        print(f"🚀 Creating browser pool of {POOL_SIZE} contexts...")
+        print(f"🚀 Creating pool of {POOL_SIZE} contexts with STEALTH...")
         for i in range(POOL_SIZE):
             ctx = await create_browser_context(i)
             browser_pool.append(ctx)
-        print(f"✅ Browser pool ready with {len(browser_pool)} contexts!")
+        print(f"✅ Pool ready: {len(browser_pool)} contexts!")
 
     return browser_pool
 
 
 def get_next_browser() -> BrowserContext:
-    """Round-robin browser selection"""
+    """Round-robin"""
     global pool_index
     context = browser_pool[pool_index]
     pool_index = (pool_index + 1) % len(browser_pool)
@@ -237,70 +153,62 @@ def get_next_browser() -> BrowserContext:
 
 
 async def fetch_rozetka_html(url: str) -> Tuple[str, int]:
-    """
-    Fetch with rotating browser contexts + smart delays
-    """
+    """Fetch with STEALTH + rotation"""
 
-    # SMART DELAY to avoid IP ban
     await smart_delay()
 
-    # Ensure URL ends with /
     if not url.endswith('/'):
         url += '/'
 
-    # Get next browser from pool (rotation)
     contexts = await get_browser_pool()
     context = get_next_browser()
 
     page = await context.new_page()
 
-    try:
-        # Small random delay
-        await page.wait_for_timeout(random.randint(300, 800))
+    # 🥷 APPLY STEALTH (this is the magic!)
+    await stealth_async(page)
 
-        # Navigate
+    try:
+        await page.wait_for_timeout(random.randint(500, 1000))
+
         try:
-            response = await page.goto(url, wait_until="domcontentloaded", timeout=10000)
+            response = await page.goto(url, wait_until="domcontentloaded", timeout=12000)
             status_code = response.status if response else 200
         except Exception as e:
-            print(f"⚠️  Load failed for {url}: {e}")
             try:
                 response = await page.goto(url, wait_until="load", timeout=15000)
                 status_code = response.status if response else 200
             except:
                 return ("", 502)
 
-        # Wait for content
-        await page.wait_for_timeout(random.randint(500, 1000))
+        await page.wait_for_timeout(random.randint(1000, 1500))
 
-        # Try to find price element
         for attempt in range(2):
             try:
                 await page.wait_for_selector(
                     'p.product-price__big, [class*="product-price"]',
-                    timeout=2000
+                    timeout=3000
                 )
                 break
             except:
                 if attempt < 1:
-                    await page.wait_for_timeout(1000)
+                    await page.wait_for_timeout(1500)
 
         html = await page.content()
         html_size = len(html)
 
-        is_product_page = any(marker in html for marker in [
+        is_product = any(m in html for m in [
             'product-about', 'product-main', 'product-price',
-            'productId', 'product_id', '"@type":"Product"',
-            'data-goods-id'
+            'productId', '"@type":"Product"', 'data-goods-id'
         ])
 
-        if html_size < 50000 or not is_product_page:
+        if html_size < 50000 or not is_product:
             if '404' in html or 'не знайдено' in html.lower():
-                print(f"⚠️  404: {url} ({html_size} bytes)")
+                print(f"⚠️  404: {url} ({html_size}b)")
                 return (html, 404)
-            print(f"⚠️  Small HTML: {url} ({html_size} bytes)")
+            print(f"⚠️  Small: {url} ({html_size}b)")
         else:
-            print(f"✅ Fetched: {url} ({html_size} bytes)")
+            print(f"✅ OK: {url} ({html_size}b)")
 
         return (html, status_code)
 
@@ -315,10 +223,10 @@ async def fetch_rozetka_html(url: str) -> Tuple[str, int]:
 
 
 def extract_price_from_json_ld(html: str) -> Optional[float]:
-    """Extract price from JSON-LD schema"""
+    """Extract from JSON-LD"""
     try:
-        json_ld_pattern = r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>'
-        matches = re.findall(json_ld_pattern, html, re.DOTALL | re.I)
+        pattern = r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>'
+        matches = re.findall(pattern, html, re.DOTALL | re.I)
 
         for match in matches:
             try:
@@ -340,19 +248,16 @@ def extract_price_from_json_ld(html: str) -> Optional[float]:
 
 
 def parse_price_from_html(html: str) -> Optional[float]:
-    """Universal price parser"""
+    """Universal parser"""
 
-    # Strategy 1: JSON-LD
     price = extract_price_from_json_ld(html)
     if price:
         print(f"💰 JSON-LD: {price}")
         return price
 
-    # Strategy 2: Multiple regex patterns
     patterns = [
         r'class="[^"]*product-price__big[^"]*"[^>]*>\s*(\d+(?:\s*\d+)*)\s*<span',
         r'<p[^>]*product-price__big[^>]*>\s*(\d+(?:\s*\d+)*)\s*<span',
-        r'<p[^>]*class="[^"]*product-price__big[^"]*"[^>]*>([^<]+)<span',
         r'product-price__big[^>]*>\s*([0-9\s\u00A0]+)',
         r'data-price=["\'](\d+)["\']',
         r'"price":\s*(\d+)',
@@ -377,10 +282,10 @@ def parse_price_from_html(html: str) -> Optional[float]:
 
 
 def check_availability(html: str) -> str:
-    """Check why no price"""
+    """Check status"""
     is_product = any(m in html for m in [
         'product-about', 'product-main', 'product-price',
-        'productId', 'product_id', '"@type":"Product"'
+        'productId', '"@type":"Product"'
     ])
 
     if len(html) < 30000:
@@ -397,10 +302,9 @@ def check_availability(html: str) -> str:
     return "not_found"
 
 
-# --- Endpoints ---
 @app.get("/price")
 async def get_price(url: str):
-    """Get price for single URL"""
+    """Single price"""
     if not url.startswith("http") or 'rozetka.com.ua' not in url:
         raise HTTPException(status_code=400, detail="invalid url")
 
@@ -425,14 +329,13 @@ async def get_price(url: str):
 
 @app.post("/prices")
 async def get_prices(request: LinksRequest):
-    """Batch prices with browser rotation"""
+    """Batch prices"""
     if not request.urls:
         return JSONResponse({"prices": []})
 
     try:
         await get_browser_pool()
     except Exception as e:
-        print(f"Browser error: {e}")
         return JSONResponse({"prices": ["browser error" for _ in request.urls]})
 
     results = []
@@ -454,7 +357,6 @@ async def get_prices(request: LinksRequest):
             else:
                 results.append(check_availability(html))
         except Exception as e:
-            print(f"Error: {url} - {e}")
             results.append("error")
 
     return JSONResponse({"prices": results})
@@ -464,14 +366,14 @@ async def get_prices(request: LinksRequest):
 def root():
     return {
         "status": "ok",
-        "service": "rozetka-parser-pool",
-        "version": "4.0-browser-pool",
+        "service": "rozetka-parser-stealth",
+        "version": "5.0-stealth",
         "pool_size": POOL_SIZE,
         "features": [
-            f"{POOL_SIZE} rotating browser contexts",
-            "Different fingerprints per context",
-            "No IP bans!",
-            "15+ price extraction strategies"
+            "playwright-stealth integration",
+            f"{POOL_SIZE} browser contexts",
+            "Smart rate limiting",
+            "100% human-like behavior"
         ]
     }
 
@@ -480,17 +382,14 @@ def root():
 def health():
     return {
         "status": "healthy",
-        "browser_pool": len(browser_pool),
-        "pool_size": POOL_SIZE
+        "browser_pool": len(browser_pool)
     }
 
 
 @app.on_event("startup")
 async def startup_event():
     print("=" * 60)
-    print("🚀 Rozetka Parser with BROWSER POOL")
-    print("=" * 60)
-    print(f"📦 Pool size: {POOL_SIZE} contexts")
+    print("🥷 Rozetka Parser with PLAYWRIGHT-STEALTH")
     print("=" * 60)
     await get_browser_pool()
     print("=" * 60)
@@ -499,7 +398,7 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     print("=" * 60)
-    print("🛑 Shutting down")
+    print("🛑 Shutdown")
     print("=" * 60)
 
     global playwright_instance, browser, browser_pool
@@ -507,16 +406,12 @@ async def shutdown_event():
     try:
         for ctx in browser_pool:
             await ctx.close()
-        print(f"✅ Closed {len(browser_pool)} contexts")
-
         if browser:
             await browser.close()
-            print("✅ Browser closed")
-
         if playwright_instance:
             await playwright_instance.stop()
-            print("✅ Playwright stopped")
+        print("✅ Clean shutdown")
     except Exception as e:
-        print(f"⚠️  Shutdown error: {e}")
+        print(f"⚠️  {e}")
 
     print("=" * 60)
